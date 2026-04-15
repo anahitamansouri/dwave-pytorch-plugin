@@ -15,16 +15,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 import torch
 from torch import nn
+
+DeviceLikeType: TypeAlias = str | torch.device | int
 
 if TYPE_CHECKING:
     from dwave.plugins.torch.models.boltzmann_machine import (
         GraphRestrictedBoltzmannMachine as GRBM,
     )
-    from torch._prims_common import DeviceLikeType
 
 from dwave.plugins.torch.samplers.base import TorchSampler
 from dwave.plugins.torch.nn.functional import bit2spin_soft
@@ -166,8 +167,7 @@ class BipartiteGibbsSampler(TorchSampler):
 
     @torch.no_grad
     def _compute_effective_field(self, block: torch.nn.ParameterList) -> torch.Tensor:
-        """
-        Computes the effective field for all vertices in ``block``.
+        """Computes the effective field for all vertices in ``block``.
 
         Args:
             block (nn.ParameterList): A list of integers (indices) corresponding to the vertices of
@@ -224,37 +224,37 @@ class BipartiteGibbsSampler(TorchSampler):
     def _step(
         self,
         beta: torch.Tensor,
-        mask: torch.Tensor | None = None,
+        clamp_mask: torch.Tensor | None = None,
         x: torch.Tensor | None = None,
     ):
         """Performs a block-spin update in-place.
 
         The sampler state ``self._x`` is updated **in-place** by sequentially
-        sampling visible and hidden nodes conditioned on each other. If a mask
+        sampling visible and hidden nodes conditioned on each other. If a clamp_mask
         is provided, selected variables are re-clamped after each block update.
 
         Args:
             beta (torch.Tensor): The (scalar) inverse temperature to sample at.
-            mask (torch.Tensor, optional): Boolean tensor of shape 
+            clamp_mask (torch.Tensor, optional): Boolean tensor of shape 
                 ``(num_chains, n_nodes)`` indicating which variables are clamped. 
                 Entries set to ``True`` will keep their values during sampling.
             x (torch.Tensor, optional): Tensor of shape ``(num_chains, n_nodes)``
                 containing the values assigned to clamped variables. Only used
-                where ``mask`` is ``True``.
+                where ``clamp_mask`` is ``True``.
         """
         effective_field = self._compute_effective_field(self._grbm.visible_idx)
         self._gibbs_update(beta, self._grbm.visible_idx, effective_field)
         # Re-clamp visible variables (if they were fixed)
-        if mask is not None:
+        if clamp_mask is not None:
             v = self._grbm.visible_idx
-            self._x[:, v] = torch.where(mask[:, v], x[:, v], self._x[:, v])
+            self._x[:, v] = torch.where(clamp_mask[:, v], x[:, v], self._x[:, v])
 
         effective_field = self._compute_effective_field(self._grbm.hidden_idx)
         self._gibbs_update(beta, self._grbm.hidden_idx, effective_field)
         # Re-clamp hidden variables (if they were fixed)
-        if mask is not None:
+        if clamp_mask is not None:
             h = self._grbm.hidden_idx
-            self._x[:, h] = torch.where(mask[:, h], x[:, h], self._x[:, h])
+            self._x[:, h] = torch.where(clamp_mask[:, h], x[:, h], self._x[:, h])
 
     def _validate_input(self, x: torch.Tensor) -> None:
         """Validate conditional sampling input.
@@ -280,9 +280,9 @@ class BipartiteGibbsSampler(TorchSampler):
 
         Raises:
             ValueError: If ``x`` does not match the sampler state shape
-            ``(num_chains, n_nodes)``, contains values other than ``±1``
-            or ``NaN``, or if both visible and hidden variables are
-            simultaneously unclamped within the same chain.
+                ``(num_chains, n_nodes)``, contains values other than ``±1``
+                or ``NaN``, or if both visible and hidden variables are
+                simultaneously unclamped within the same chain.
         """
         if x.shape != self._x.shape:
             raise ValueError(
@@ -290,14 +290,14 @@ class BipartiteGibbsSampler(TorchSampler):
                 f"{self._x.shape}, but got {tuple(x.shape)} instead."
             )
 
-        mask = ~torch.isnan(x)
+        clamp_mask = ~torch.isnan(x)
 
         # Ensure values are ±1 or NaN
-        if not torch.all((x[mask] == 1) | (x[mask] == -1)):
+        if not torch.all((x[clamp_mask] == 1) | (x[clamp_mask] == -1)):
             raise ValueError("x contains values other than ±1 or NaN")
 
-        visible_unclamped = (~mask[:, self._grbm.visible_idx]).any(dim=1)
-        hidden_unclamped = (~mask[:, self._grbm.hidden_idx]).any(dim=1)
+        visible_unclamped = (~clamp_mask[:, self._grbm.visible_idx]).any(dim=1)
+        hidden_unclamped = (~clamp_mask[:, self._grbm.hidden_idx]).any(dim=1)
 
         if (visible_unclamped & hidden_unclamped).any():
             raise ValueError(
@@ -326,13 +326,14 @@ class BipartiteGibbsSampler(TorchSampler):
             torch.Tensor: A tensor of shape (num_chains, n_nodes) of +/-1 values sampled from the model.
         """
         if x is not None:
-            mask = ~torch.isnan(x)
+            clamp_mask = ~torch.isnan(x)
             self._validate_input(x)
 
             # Initialize state respecting clamped spins
-            self._x.data[:] = torch.where(mask, x, self._x)
+            self._x.data[:] = torch.where(clamp_mask, x, self._x)
         else:
-            mask = None
+            clamp_mask = None
+
         for beta in self._schedule:
-            self._step(beta, mask=mask, x=x)
+            self._step(beta, clamp_mask=clamp_mask, x=x)
         return self._x.clone()

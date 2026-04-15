@@ -51,6 +51,24 @@ class TestBipartiteGibbsSampler(unittest.TestCase):
         edges = [["v1", "h1"], ["v1", "h2"], ["v2", "h1"], ["v2", "h2"]]
         grbm = GRBM(nodes, edges, hidden_nodes=["h1", "h2"])
 
+        sampler = BipartiteGibbsSampler(grbm, num_chains=2, schedule=[1.0])
+        
+        initial_states = torch.tensor([
+            [-1,  1,  1, -1],
+            [ 1, -1, -1,  1],
+        ])
+
+        out = sampler._prepare_initial_states(num_chains=2, initial_states=initial_states)
+
+        self.assertEqual(out.shape, (2, 4))
+        self.assertTrue(torch.all(torch.isin(out, torch.tensor([-1, 1]))))
+        torch.testing.assert_close(out, initial_states)
+
+    def test_prepare_initial_states_exceptions(self):
+        nodes = ["v1", "v2", "h1", "h2"]
+        edges = [["v1", "h1"], ["v1", "h2"], ["v2", "h1"], ["v2", "h2"]]
+        grbm = GRBM(nodes, edges, hidden_nodes=["h1", "h2"])
+
         sampler = BipartiteGibbsSampler(grbm, num_chains=2, schedule=[1.0],)
         # Invalid spins
         with self.subTest("Non-spin initial states."):
